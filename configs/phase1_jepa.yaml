@@ -1,0 +1,45 @@
+# Phase 1: JEPA Pre-training Configuration
+
+# Training phase
+phase: jepa
+
+# Model architecture
+mol_dim: 768
+rxn_dim: 384
+context_dim: 256
+target_dim: 256
+env_dim: 128
+property_dim: 64
+num_properties: 10
+
+# Training hyperparameters
+num_epochs: 100
+batch_size: 32
+learning_rate: 1.0e-4
+weight_decay: 1.0e-5
+
+# Loss weights
+lambda_jepa: 1.0
+lambda_energy: 1.0
+lambda_consistency: 0.1
+lambda_kl: 0.01
+lambda_vq: 0.1
+
+# Energy model
+energy_margin: 1.0
+consistency_temperature: 0.1
+
+# Data
+train_data_path: "data/train"
+val_data_path: "data/val"
+num_workers: 4
+
+# Checkpointing
+checkpoint_dir: "checkpoints/phase1"
+save_every: 10
+log_every: 100
+
+# Wandb logging (optional)
+use_wandb: false
+wandb_project: "chemjepa"
+wandb_run_name: "phase1_jepa_pretrain"

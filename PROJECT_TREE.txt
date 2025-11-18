@@ -1,0 +1,51 @@
+ChemWorld/
+├── README.md                      # Main documentation
+├── setup.py                       # Package installation
+│
+├── test_quick.py                  # Quick test (30 sec) ⭐
+├── train_production.py            # Production training (2-4 hrs) ⭐
+│
+├── chemjepa/                      # Core library
+│   ├── __init__.py
+│   ├── chemjepa.py                # Main ChemJEPA interface
+│   │
+│   ├── models/                    # Neural network modules
+│   │   ├── __init__.py
+│   │   ├── encoders/
+│   │   │   ├── molecular.py       # E(3)-equivariant GNN
+│   │   │   ├── environment.py     # Domain prototypes
+│   │   │   └── protein.py         # ESM-2 integration
+│   │   ├── latent.py              # Hierarchical latent state
+│   │   ├── energy.py              # Energy-based compatibility
+│   │   ├── dynamics.py            # Latent dynamics predictor
+│   │   ├── novelty.py             # Triple uncertainty
+│   │   └── planning.py            # MCTS planning engine
+│   │
+│   ├── training/                  # Training infrastructure
+│   │   ├── __init__.py
+│   │   ├── trainer.py             # Training loop
+│   │   └── objectives.py          # Loss functions
+│   │
+│   ├── data/                      # Data loading
+│   │   ├── __init__.py
+│   │   └── loaders.py             # Dataset classes
+│   │
+│   └── utils/                     # Utilities
+│       ├── __init__.py
+│       └── chemistry.py           # RDKit helpers
+│
+├── scripts/                       # Data preparation
+│   └── prepare_data.py            # Download datasets
+│
+├── data/                          # Datasets
+│   └── dummy/                     # Test data (6+2 molecules)
+│       ├── train.csv
+│       └── val.csv
+│
+├── checkpoints/                   # Saved models
+│   └── best_jepa.pt              # From quick test
+│
+└── configs/                       # Training configs
+    ├── phase1_jepa.yaml
+    ├── phase2_energy.yaml
+    └── phase3_dynamics.yaml

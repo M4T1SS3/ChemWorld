@@ -1,0 +1,52 @@
+# Phase 2: Property Prediction Fine-tuning Configuration
+
+# Training phase
+phase: property
+
+# Model architecture (same as phase 1)
+mol_dim: 768
+rxn_dim: 384
+context_dim: 256
+target_dim: 256
+env_dim: 128
+property_dim: 64
+num_properties: 10
+
+# Training hyperparameters
+num_epochs: 50
+batch_size: 64
+learning_rate: 5.0e-5  # Lower LR for fine-tuning
+weight_decay: 1.0e-5
+
+# Loss weights
+lambda_property: 1.0
+lambda_kl: 0.001  # Reduced for fine-tuning
+
+# Data
+train_data_path: "data/properties/train"
+val_data_path: "data/properties/val"
+num_workers: 4
+
+# Properties to predict
+properties:
+  - LogP
+  - QED
+  - SA_score
+  - TPSA
+  - MolWt
+  - HBD
+  - HBA
+  - hERG
+  - Caco2
+  - CYP3A4
+
+# Checkpointing
+pretrained_checkpoint: "checkpoints/phase1/chemjepa_jepa_best.pt"
+checkpoint_dir: "checkpoints/phase2"
+save_every: 5
+log_every: 50
+
+# Wandb logging
+use_wandb: false
+wandb_project: "chemjepa"
+wandb_run_name: "phase2_property_finetune"
