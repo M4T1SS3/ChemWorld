@@ -85,11 +85,13 @@ class E3EquivariantConv(MessagePassing):
         # Update positions (equivariant)
         row, col = edge_index
         pos_diff = pos[row] - pos[col]
-        pos_diff_norm = pos_diff.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        pos_diff_norm = pos_diff.norm(dim=-1, keepdim=True).clamp(min=1e-4)
         pos_dir = pos_diff / pos_diff_norm
 
-        # Aggregate position updates
+        # Aggregate position updates with additional safety checks
         pos_update = self.pos_net(out).unsqueeze(-1) * pos_dir
+        # Clamp position updates to prevent explosion
+        pos_update = torch.clamp(pos_update, min=-10.0, max=10.0)
         pos_new = pos + scatter(pos_update, col, dim=0, dim_size=pos.size(0), reduce='mean')
 
         return x_new, pos_new
@@ -105,6 +107,8 @@ class E3EquivariantConv(MessagePassing):
         # Compute distance
         pos_diff = pos_i - pos_j
         dist = pos_diff.norm(dim=-1, keepdim=True)
+        # Clamp distance to prevent zero division and extreme values
+        dist = torch.clamp(dist, min=1e-4, max=100.0)
 
         # Build message
         msg_input = [x_i, x_j, dist]
@@ -152,8 +156,13 @@ class AttentionPooling(nn.Module):
         q = self.query.unsqueeze(0)  # [1, H, D]
         attn = (q * k).sum(dim=-1) * self.scale  # [N, H]
 
-        # Softmax per graph
-        attn_exp = attn.exp()
+        # Clamp attention logits to prevent overflow (NUMERICAL STABILITY FIX)
+        attn = torch.clamp(attn, min=-20.0, max=20.0)
+
+        # Softmax per graph (using log-sum-exp trick for stability)
+        attn_max = scatter(attn, batch, dim=0, dim_size=B, reduce='max')[batch]  # [N, H]
+        attn_shifted = attn - attn_max
+        attn_exp = torch.exp(attn_shifted)
         attn_sum = scatter(attn_exp, batch, dim=0, dim_size=B, reduce='sum')[batch]  # [N, H]
         attn_norm = attn_exp / (attn_sum + 1e-8)
 
@@ -206,8 +215,13 @@ class Set2Set(nn.Module):
             q_expanded = q[batch]  # [N, in_dim]
             attn = (x * q_expanded).sum(dim=-1)  # [N]
 
-            # Softmax per graph
-            attn_exp = attn.exp()
+            # Clamp attention logits to prevent overflow (NUMERICAL STABILITY FIX)
+            attn = torch.clamp(attn, min=-20.0, max=20.0)
+
+            # Softmax per graph (using log-sum-exp trick for stability)
+            attn_max = scatter(attn, batch, dim=0, dim_size=B, reduce='max')[batch]
+            attn_shifted = attn - attn_max
+            attn_exp = torch.exp(attn_shifted)
             attn_sum = scatter(attn_exp, batch, dim=0, dim_size=B, reduce='sum')[batch]
             attn_norm = attn_exp / (attn_sum + 1e-8)
 
@@ -258,8 +272,11 @@ class MolecularEncoder(nn.Module):
         self.num_layers = num_layers
         self.use_3d = use_3d
 
-        # Input embedding
-        self.atom_embedding = nn.Linear(atom_feature_dim, hidden_dim)
+        # Input embedding with LayerNorm for better gradient flow
+        self.atom_embedding = nn.Sequential(
+            nn.Linear(atom_feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+        )
         self.edge_embedding = nn.Linear(edge_feature_dim, edge_feature_dim) if edge_feature_dim > 0 else None
 
         # E(3)-equivariant layers (if using 3D)
@@ -331,16 +348,22 @@ class MolecularEncoder(nn.Module):
         if edge_attr is not None and self.edge_embedding is not None:
             edge_attr = self.edge_embedding(edge_attr)
 
-        # Message passing
+        # Message passing with safer residual connections (NUMERICAL STABILITY FIX)
         if self.use_3d:
             assert pos is not None, "3D coordinates required when use_3d=True"
             for conv in self.conv_layers:
                 h_new, pos = conv(h, pos, edge_index, edge_attr)
-                h = h + h_new  # Residual connection
+                # Clamp updates to prevent explosion
+                h_new = torch.clamp(h_new, min=-10.0, max=10.0)
+                # Gated residual: reduce contribution of new features
+                h = 0.9 * h + 0.1 * h_new
         else:
             for conv in self.conv_layers:
                 h_new = conv(h, edge_index, edge_attr)
-                h = h + h_new  # Residual connection
+                # Clamp updates to prevent explosion
+                h_new = torch.clamp(h_new, min=-10.0, max=10.0)
+                # Gated residual: reduce contribution of new features
+                h = 0.9 * h + 0.1 * h_new
 
         # Compositional pooling
         z_local = self.local_pool(h, batch)
