@@ -14,7 +14,10 @@ from torch.utils.data import DataLoader
 from pathlib import Path
 from tqdm import tqdm
 import time
+import sys
 from typing import Dict, Optional
+
+from .error_budget import ErrorBudget
 
 try:
     import wandb
@@ -46,6 +49,7 @@ class ChemJEPATrainer:
         device='cuda',
         log_dir='logs',
         use_wandb=False,
+        error_budget_threshold=0.05,
     ):
         self.model = model
         self.criterion = criterion
@@ -59,6 +63,13 @@ class ChemJEPATrainer:
         self.step = 0
         self.epoch = 0
         self.best_val_loss = float('inf')
+
+        # Initialize error budget tracker
+        self.error_budget = ErrorBudget(
+            threshold=error_budget_threshold,
+            window_size=100,
+            log_dir=str(self.log_dir / "failures"),
+        )
 
     def train_epoch(
         self,
@@ -86,12 +97,56 @@ class ChemJEPATrainer:
         pbar = tqdm(train_loader, desc=f"Epoch {self.epoch} [{phase}]")
 
         for batch_idx, batch in enumerate(pbar):
+            # Check error budget every 10 batches
+            if batch_idx % 10 == 0 and batch_idx > 0:
+                if self.error_budget.check_budget():
+                    stats = self.error_budget.get_statistics()
+                    print(f"\n{'='*80}")
+                    print(f"⚠️  ERROR BUDGET EXCEEDED!")
+                    print(f"{'='*80}")
+                    print(f"Window failure rate: {stats['window_failure_rate']*100:.2f}% > {self.error_budget.threshold*100:.1f}%")
+                    print(f"Total failures: {stats['total_failures']}/{stats['total_batches']}")
+                    print(f"Consecutive failures: {stats['consecutive_failures']}")
+                    print(f"\n📊 Saving comprehensive failure report...")
+
+                    # Save emergency checkpoint
+                    checkpoint_path = self.log_dir / f"emergency_batch_{batch_idx}.pt"
+                    self._save_emergency_checkpoint(checkpoint_path, batch_idx, stats)
+
+                    # Save failure report
+                    report_path = self.error_budget.save_final_report(checkpoint_path)
+
+                    print(f"\n💾 Emergency checkpoint: {checkpoint_path}")
+                    print(f"📝 Failure report: {report_path}")
+                    print(f"\n🛑 HALTING TRAINING - Please investigate failure report")
+                    print(f"{'='*80}\n")
+
+                    # Exit with error code
+                    sys.exit(1)
+
             self.optimizer.zero_grad()
 
             # Prepare inputs for ChemJEPA forward pass
             try:
                 # Extract graph data from PyG Batch object
                 graph = batch["graph"].to(self.device)
+
+                # INPUT VALIDATION (NUMERICAL STABILITY FIX)
+                # Skip batches with NaN/Inf in input features
+                if torch.isnan(graph.x).any() or torch.isinf(graph.x).any():
+                    print(f"\n⚠ Filtering batch {batch_idx}: NaN/Inf in input atom features")
+                    continue
+
+                if hasattr(graph, 'edge_attr') and graph.edge_attr is not None:
+                    if torch.isnan(graph.edge_attr).any() or torch.isinf(graph.edge_attr).any():
+                        print(f"\n⚠ Filtering batch {batch_idx}: NaN/Inf in input edge features")
+                        continue
+
+                if hasattr(graph, 'pos') and graph.pos is not None:
+                    if torch.isnan(graph.pos).any() or torch.isinf(graph.pos).any():
+                        print(f"\n⚠ Filtering batch {batch_idx}: NaN/Inf in input positions")
+                        continue
+
                 mol_graph = (
                     graph.x,
                     graph.edge_index,
@@ -110,15 +165,19 @@ class ChemJEPATrainer:
                 # Phase 1: Learn good molecular representations
                 z_mol = self.model.encode_molecule(*mol_graph)
 
+                # Store intermediate tensors for debugging
+                intermediate_tensors = {"z_mol": z_mol}
+
                 # Check for NaN/Inf in embeddings
                 if torch.isnan(z_mol).any() or torch.isinf(z_mol).any():
                     print(f"\n⚠ NaN/Inf in embeddings at batch {batch_idx}!")
                     raise ValueError("NaN in embeddings")
 
-                # Self-supervised objectives:
+                # Self-supervised objectives (NUMERICAL STABILITY FIXES):
                 # 1. Ensure latent space is not collapsed (variance)
                 latent_var = torch.var(z_mol, dim=0).mean()
-                latent_var = torch.clamp(latent_var, min=1e-6, max=10.0)  # Stability
+                # Tighter clamping: increased min from 1e-6 to 1e-4
+                latent_var = torch.clamp(latent_var, min=1e-4, max=1.0)
                 var_loss = torch.relu(0.1 - latent_var)
 
                 # 2. Ensure different molecules have different representations (contrastive)
@@ -126,17 +185,31 @@ class ChemJEPATrainer:
                     # Normalize with epsilon for numerical stability
                     z_norm = torch.nn.functional.normalize(z_mol + 1e-8, dim=-1)
                     sim = torch.matmul(z_norm, z_norm.t())
+                    # Clamp similarity to valid range
                     sim = torch.clamp(sim, min=-1.0, max=1.0)
                     mask = 1 - torch.eye(B, device=self.device)
                     contrast_loss = (sim * mask).abs().mean()
+                    # Clamp contrast loss to prevent explosion
+                    contrast_loss = torch.clamp(contrast_loss, min=0.0, max=10.0)
                 else:
                     contrast_loss = torch.tensor(0.0, device=self.device)
 
-                # 3. L2 regularization (reduced weight)
+                # 3. L2 regularization (reduced weight from 1e-5 to 1e-6)
                 l2_loss = sum((p ** 2).sum() for p in self.model.molecular_encoder.parameters()) / 1e6
+                l2_loss = torch.clamp(l2_loss, min=0.0, max=100.0)
 
-                # Total loss with safer weights
-                loss = var_loss + 0.05 * contrast_loss + 1e-5 * l2_loss
+                # Store loss components for debugging
+                intermediate_tensors.update({
+                    "var_loss": var_loss,
+                    "contrast_loss": contrast_loss,
+                    "l2_loss": l2_loss,
+                })
+
+                # Total loss with safer weights (reduced contrast from 0.05 to 0.02)
+                loss = var_loss + 0.02 * contrast_loss + 1e-6 * l2_loss
+
+                # Clamp final loss to prevent extreme values
+                loss = torch.clamp(loss, min=0.0, max=100.0)
 
                 # Check for NaN in loss
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -152,39 +225,60 @@ class ChemJEPATrainer:
                     print(f"  Contrast: {contrast_loss.item():.4f}")
 
             except Exception as e:
-                # If forward pass fails, use dummy loss
+                # Record failure in error budget
+                self.error_budget.record_failure(
+                    batch_idx=batch_idx,
+                    error=e,
+                    batch_data=batch,
+                    intermediate_tensors=intermediate_tensors if 'intermediate_tensors' in locals() else None,
+                )
                 print(f"\n⚠ Forward pass failed at batch {batch_idx}: {e}")
-                loss = torch.tensor(0.001, requires_grad=True, device=self.device)
+                print(f"  Skipping batch and continuing training...")
+                continue
 
-            # Backward pass
+            # Backward pass (NUMERICAL STABILITY FIXES)
             if loss.requires_grad and loss.item() > 0:
                 loss.backward()
 
                 # Check for NaN gradients
                 has_nan_grad = False
+                max_grad_norm = 0.0
                 for param in self.model.parameters():
-                    if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
-                        has_nan_grad = True
-                        break
+                    if param.grad is not None:
+                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                            has_nan_grad = True
+                            break
+                        max_grad_norm = max(max_grad_norm, param.grad.abs().max().item())
 
                 if has_nan_grad:
                     print(f"\n⚠ NaN gradient detected at batch {batch_idx}, skipping update")
                     self.optimizer.zero_grad()
+                    # Record as failure
+                    self.error_budget.record_failure(
+                        batch_idx=batch_idx,
+                        error=ValueError("NaN gradients"),
+                        batch_data=batch,
+                        intermediate_tensors=intermediate_tensors,
+                    )
                 else:
-                    # Aggressive gradient clipping
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                    # More aggressive gradient clipping (reduced from 0.5 to 0.1)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1)
                     self.optimizer.step()
+                    # Record success
+                    self.error_budget.record_success()
+
+                    # Log extreme gradients for debugging
+                    if max_grad_norm > 1.0 and batch_idx % 100 == 0:
+                        print(f"  Note: Large gradient norm: {max_grad_norm:.4f}")
 
             # Update metrics
             total_loss += loss.item()
             num_batches += 1
             self.step += 1
 
-            # Update progress bar
-            pbar.set_postfix({
-                "loss": loss.item(),
-                "avg_loss": total_loss / num_batches,
-            })
+            # Update progress bar with error budget info
+            budget_info = self.error_budget.get_progress_info()
+            pbar.set_postfix_str(f"loss={loss.item():.4f}, avg={total_loss / max(num_batches, 1):.4f}, {budget_info}")
 
             # Log
             if self.step % log_every == 0:
@@ -391,3 +485,22 @@ class ChemJEPATrainer:
         self.best_val_loss = checkpoint.get("best_val_loss", float('inf'))
 
         print(f"Loaded checkpoint from epoch {self.epoch}")
+
+    def _save_emergency_checkpoint(self, path: Path, batch_idx: int, error_stats: Dict):
+        """Save emergency checkpoint when error budget is exceeded."""
+        checkpoint = {
+            "epoch": self.epoch,
+            "step": self.step,
+            "batch_idx": batch_idx,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "best_val_loss": self.best_val_loss,
+            "error_budget_stats": error_stats,
+            "emergency": True,
+        }
+
+        if self.scheduler is not None:
+            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+
+        torch.save(checkpoint, path)
+        print(f"  Emergency checkpoint saved: {path}")
