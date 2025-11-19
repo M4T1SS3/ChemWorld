@@ -70,21 +70,37 @@ def smiles_to_graph(smiles: str, use_3d: bool = True) -> Tuple:
     # 3D coordinates
     pos = None
     if use_3d:
-        try:
-            # Generate conformer
-            AllChem.EmbedMolecule(mol, randomSeed=42)
-            AllChem.MMFFOptimizeMolecule(mol)
+        pos = None
+        # Try multiple random seeds for conformer generation
+        for seed in [42, 123, 456, 789]:
+            try:
+                # Generate conformer with this seed
+                result = AllChem.EmbedMolecule(mol, randomSeed=seed)
+                if result == 0:  # Success
+                    AllChem.MMFFOptimizeMolecule(mol)
 
-            conformer = mol.GetConformer()
-            pos = torch.tensor([
-                [conformer.GetAtomPosition(i).x,
-                 conformer.GetAtomPosition(i).y,
-                 conformer.GetAtomPosition(i).z]
-                for i in range(mol.GetNumAtoms())
-            ], dtype=torch.float)
-        except:
-            warnings.warn(f"Failed to generate 3D coordinates for {smiles}")
-            pos = torch.zeros(mol.GetNumAtoms(), 3)
+                    conformer = mol.GetConformer()
+                    pos = torch.tensor([
+                        [conformer.GetAtomPosition(i).x,
+                         conformer.GetAtomPosition(i).y,
+                         conformer.GetAtomPosition(i).z]
+                        for i in range(mol.GetNumAtoms())
+                    ], dtype=torch.float)
+
+                    # Validate coordinates are not degenerate
+                    if not torch.all(pos == 0.0):
+                        # Check that positions have reasonable variance
+                        pos_std = pos.std()
+                        if pos_std > 0.1:  # Reasonable 3D structure
+                            break
+            except Exception as e:
+                continue
+
+        # If all attempts failed, add small gaussian noise instead of zeros
+        if pos is None or torch.all(pos == 0.0):
+            warnings.warn(f"Failed to generate valid 3D coordinates for {smiles}, using noisy positions")
+            # Create random positions with small variance instead of all zeros
+            pos = torch.randn(mol.GetNumAtoms(), 3) * 0.1
 
     return x, edge_index, edge_attr, pos
 
