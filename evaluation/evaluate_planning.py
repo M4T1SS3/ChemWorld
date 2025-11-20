@@ -57,7 +57,7 @@ def load_models():
     # Filter out Phase 2/3 components
     filtered_state_dict = {
         k: v for k, v in checkpoint['model_state_dict'].items()
-        if not k.startswith('energy_model.') and not k.startswith('imagination_engine.')
+        if not k.startswith('energy_model.') and not k.startswith('imagination_engine.') and not k.startswith('dynamics_model.')
     }
 
     encoder.load_state_dict(filtered_state_dict, strict=False)
