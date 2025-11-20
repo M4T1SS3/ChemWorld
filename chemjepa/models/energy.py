@@ -1,436 +1,441 @@
+#!/usr/bin/env python3
 """
-Energy-Based Compatibility Function
+Energy-Based Compatibility Model for ChemJEPA
 
-Learns an energy landscape where low energy = high compatibility.
+Learns a decomposable energy function that scores molecular candidates against
+multiple objectives without retraining. Enables flexible multi-objective optimization.
 
-E(z_mol, z_target, z_env, p_target) = weighted sum of:
-  - E_binding: Binding affinity to target
-  - E_stability: Chemical stability in environment
-  - E_property: Match to desired properties
-  - E_feasibility: Synthetic accessibility
-  - E_density: Latent density (regularization)
+Architecture:
+    E(z_mol, objectives) = Σ_i w_i * E_i(z_mol, θ_i)
 
-Key innovation: Learned energy decomposition via meta-network.
+Where:
+    - E_binding: Binding affinity to target protein
+    - E_stability: Molecular stability and synthesizability
+    - E_properties: Match to desired property ranges (LogP, MW, etc.)
+    - E_novelty: Distance from known molecules (exploration bonus)
+
+Key Features:
+    - Dynamic objective weighting without retraining
+    - Learned energy decomposition (not hard-coded)
+    - Uncertainty-aware scoring via ensemble
+    - Compatible with Phase 1 frozen embeddings
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, Optional, Tuple
-from .latent import LatentState
 
 
-class BindingAffinityEnergy(nn.Module):
+class EnergyComponent(nn.Module):
     """
-    Energy term for molecule-target binding affinity.
+    Single energy component (e.g., binding, stability, properties).
 
-    Predicts interaction strength using learned dot product + MLP.
+    Maps from molecular latent (768-dim) to scalar energy value.
+    Uses deep residual architecture for expressiveness.
     """
 
-    def __init__(self, mol_dim: int = 768, target_dim: int = 256, hidden_dim: int = 512):
+    def __init__(self, input_dim: int = 768, hidden_dim: int = 512, num_layers: int = 4):
         super().__init__()
 
-        # Bilinear interaction
-        self.bilinear = nn.Bilinear(mol_dim, target_dim, hidden_dim)
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
 
-        # Refinement network
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
+        # Initial projection
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+
+        # Residual blocks
+        self.blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.SiLU(),
+                nn.Dropout(0.1),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+            )
+            for _ in range(num_layers)
+        ])
+
+        # Output head (energy is scalar)
+        self.output_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, 1),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 1)
         )
 
-    def forward(self, z_mol: torch.Tensor, z_target: torch.Tensor) -> torch.Tensor:
+    def forward(self, z_mol: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            z_mol: Molecular embedding [B, mol_dim]
-            z_target: Target protein embedding [B, target_dim]
+            z_mol: Molecular latent [batch, 768]
 
         Returns:
-            Binding energy [B, 1] (lower = stronger binding)
+            energy: Scalar energy [batch, 1]
         """
-        interaction = self.bilinear(z_mol, z_target)
-        energy = self.net(interaction)
+        x = self.input_proj(z_mol)
+
+        # Residual blocks
+        for block in self.blocks:
+            x = x + block(x)  # Residual connection
+
+        energy = self.output_head(x)
         return energy
 
 
-class StabilityEnergy(nn.Module):
+class PropertyEnergyComponent(nn.Module):
     """
-    Energy term for chemical stability in given environment.
+    Energy component for property matching (LogP, MW, TPSA, etc.).
 
-    Considers:
-    - pH stability
-    - Temperature stability
-    - Solvent compatibility
+    Learns to score molecules based on deviation from target property ranges.
+    Uses learned distance metrics rather than hard-coded thresholds.
     """
 
-    def __init__(self, mol_dim: int = 768, env_dim: int = 128, hidden_dim: int = 512):
-        super().__init__()
-
-        self.net = nn.Sequential(
-            nn.Linear(mol_dim + env_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, 1),
-        )
-
-    def forward(self, z_mol: torch.Tensor, z_env: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            z_mol: Molecular embedding [B, mol_dim]
-            z_env: Environment embedding [B, env_dim]
-
-        Returns:
-            Stability energy [B, 1] (lower = more stable)
-        """
-        combined = torch.cat([z_mol, z_env], dim=-1)
-        energy = self.net(combined)
-        return energy
-
-
-class PropertyMatchEnergy(nn.Module):
-    """
-    Energy term for matching target properties (ADMET, etc.).
-
-    Multi-task prediction of properties with learned property weights.
-    """
-
-    def __init__(
-        self,
-        mol_dim: int = 768,
-        property_dim: int = 64,
-        num_properties: int = 10,
-        hidden_dim: int = 512,
-    ):
+    def __init__(self, input_dim: int = 768, num_properties: int = 5, hidden_dim: int = 256):
         super().__init__()
 
         self.num_properties = num_properties
 
-        # Shared molecular representation
-        self.mol_encoder = nn.Sequential(
-            nn.Linear(mol_dim, hidden_dim),
+        # Property prediction head (same as linear probe in evaluation)
+        self.property_predictor = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.GELU(),
+            nn.SiLU(),
             nn.Dropout(0.1),
+            nn.Linear(hidden_dim, num_properties)
         )
 
-        # Property-specific heads
-        self.property_heads = nn.ModuleList([
+        # Learned distance metric for each property
+        # Maps (predicted, target) -> energy penalty
+        self.distance_nets = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim // 2),
-                nn.GELU(),
-                nn.Linear(hidden_dim // 2, 1),
+                nn.Linear(2, 64),  # [predicted, target]
+                nn.SiLU(),
+                nn.Linear(64, 1)
             )
             for _ in range(num_properties)
         ])
 
-        # Property target encoder
-        self.target_encoder = nn.Sequential(
-            nn.Linear(property_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, num_properties),
-        )
-
     def forward(
         self,
         z_mol: torch.Tensor,
-        p_target: torch.Tensor,
-        property_mask: Optional[torch.Tensor] = None,
+        target_properties: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            z_mol: Molecular embedding [B, mol_dim]
-            p_target: Target property vector [B, property_dim]
-            property_mask: Mask for which properties to consider [B, num_properties]
+            z_mol: Molecular latent [batch, 768]
+            target_properties: Target property values [batch, num_properties]
+                              (None during training, provided during optimization)
 
         Returns:
-            energy: Property mismatch energy [B, 1]
-            predictions: Individual property predictions [B, num_properties]
+            energy: Property matching energy [batch, 1]
+            predicted_properties: Predicted property values [batch, num_properties]
         """
-        # Encode molecule
-        h = self.mol_encoder(z_mol)
-
         # Predict properties
-        predictions = torch.stack([head(h).squeeze(-1) for head in self.property_heads], dim=-1)  # [B, num_properties]
+        predicted = self.property_predictor(z_mol)
 
-        # Encode targets
-        targets = self.target_encoder(p_target)  # [B, num_properties]
+        if target_properties is None:
+            # Training mode: return zero energy and predictions
+            return torch.zeros(z_mol.shape[0], 1, device=z_mol.device), predicted
 
-        # Compute mismatch (lower = better match)
-        mismatch = (predictions - targets) ** 2
+        # Compute learned distance for each property
+        energies = []
+        for i, distance_net in enumerate(self.distance_nets):
+            pred_i = predicted[:, i:i+1]
+            target_i = target_properties[:, i:i+1]
 
-        # Apply mask if provided
-        if property_mask is not None:
-            mismatch = mismatch * property_mask
+            # Concatenate predicted and target
+            pair = torch.cat([pred_i, target_i], dim=-1)  # [batch, 2]
 
-        # Aggregate
-        energy = mismatch.sum(dim=-1, keepdim=True)
+            # Compute distance via learned network
+            dist = distance_net(pair)  # [batch, 1]
+            energies.append(dist)
 
-        return energy, predictions
+        # Sum property distances
+        total_energy = sum(energies)
+
+        return total_energy, predicted
 
 
-class FeasibilityEnergy(nn.Module):
+class ChemJEPAEnergyModel(nn.Module):
     """
-    Energy term for synthetic feasibility.
+    Complete energy-based compatibility model for ChemJEPA.
 
-    Estimates:
-    - Synthetic accessibility (SA score)
-    - Number of synthesis steps
-    - Availability of starting materials
-    """
+    Decomposes total energy into learnable components:
+        E_total = w_binding * E_binding + w_stability * E_stability +
+                  w_properties * E_properties + w_novelty * E_novelty
 
-    def __init__(self, mol_dim: int = 768, rxn_dim: int = 384, hidden_dim: int = 512):
-        super().__init__()
-
-        self.net = nn.Sequential(
-            nn.Linear(mol_dim + rxn_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, 1),
-        )
-
-    def forward(self, z_mol: torch.Tensor, z_rxn: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            z_mol: Molecular embedding [B, mol_dim]
-            z_rxn: Reaction state [B, rxn_dim]
-
-        Returns:
-            Feasibility energy [B, 1] (lower = more feasible)
-        """
-        combined = torch.cat([z_mol, z_rxn], dim=-1)
-        energy = self.net(combined)
-        return energy
-
-
-class MetaWeightingNetwork(nn.Module):
-    """
-    Learns to dynamically weight different energy terms based on task context.
-
-    Allows flexible multi-objective optimization without retraining:
-    - For drug discovery: prioritize binding + ADMET
-    - For materials: prioritize stability + properties
-    - For synthesis: prioritize feasibility
-    """
-
-    def __init__(
-        self,
-        target_dim: int = 256,
-        property_dim: int = 64,
-        num_energy_terms: int = 5,
-        hidden_dim: int = 256,
-    ):
-        super().__init__()
-
-        self.num_energy_terms = num_energy_terms
-
-        self.net = nn.Sequential(
-            nn.Linear(target_dim + property_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, num_energy_terms),
-            nn.Softmax(dim=-1),  # Weights sum to 1
-        )
-
-    def forward(self, z_target: torch.Tensor, p_target: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            z_target: Target embedding [B, target_dim]
-            p_target: Target properties [B, property_dim]
-
-        Returns:
-            Energy weights [B, num_energy_terms]
-        """
-        context = torch.cat([z_target, p_target], dim=-1)
-        weights = self.net(context)
-        return weights
-
-
-class EnergyModel(nn.Module):
-    """
-    Energy-based compatibility function with learned decomposition.
-
-    E(z, c) = Σᵢ αᵢ · Eᵢ(z, c)
-
-    where α are learned via meta-network based on task context.
-
-    Args:
-        mol_dim: Molecular embedding dimension (default: 768)
-        rxn_dim: Reaction state dimension (default: 384)
-        context_dim: Context dimension (default: 256)
-        target_dim: Target protein dimension (default: 256)
-        env_dim: Environment dimension (default: 128)
-        property_dim: Property vector dimension (default: 64)
-        num_properties: Number of property prediction heads (default: 10)
-        use_density_term: Whether to include latent density regularization (default: True)
+    Key features:
+        - Component weights can be adjusted at inference time
+        - All components trained jointly with contrastive learning
+        - Compatible with frozen Phase 1 molecular encoder
     """
 
     def __init__(
         self,
         mol_dim: int = 768,
-        rxn_dim: int = 384,
-        context_dim: int = 256,
-        target_dim: int = 256,
-        env_dim: int = 128,
-        property_dim: int = 64,
-        num_properties: int = 10,
-        use_density_term: bool = True,
+        hidden_dim: int = 512,
+        num_properties: int = 5,
+        use_ensemble: bool = True,
+        ensemble_size: int = 3
     ):
         super().__init__()
 
         self.mol_dim = mol_dim
-        self.use_density_term = use_density_term
+        self.use_ensemble = use_ensemble
+        self.ensemble_size = ensemble_size
 
         # Energy components
-        self.binding_energy = BindingAffinityEnergy(mol_dim, target_dim)
-        self.stability_energy = StabilityEnergy(mol_dim, env_dim)
-        self.property_energy = PropertyMatchEnergy(mol_dim, property_dim, num_properties)
-        self.feasibility_energy = FeasibilityEnergy(mol_dim, rxn_dim)
+        if use_ensemble:
+            # Ensemble for uncertainty estimation
+            self.binding_components = nn.ModuleList([
+                EnergyComponent(mol_dim, hidden_dim) for _ in range(ensemble_size)
+            ])
+            self.stability_components = nn.ModuleList([
+                EnergyComponent(mol_dim, hidden_dim) for _ in range(ensemble_size)
+            ])
+        else:
+            self.binding_component = EnergyComponent(mol_dim, hidden_dim)
+            self.stability_component = EnergyComponent(mol_dim, hidden_dim)
 
-        num_terms = 4
-        if use_density_term:
-            num_terms = 5
-            # Density energy (simple MLP)
-            self.density_energy = nn.Sequential(
-                nn.Linear(mol_dim, 512),
-                nn.GELU(),
-                nn.Linear(512, 1),
-            )
-
-        # Meta-weighting network
-        self.meta_network = MetaWeightingNetwork(
-            target_dim=target_dim,
-            property_dim=property_dim,
-            num_energy_terms=num_terms,
+        # Property matching (shared across ensemble for efficiency)
+        self.property_component = PropertyEnergyComponent(
+            mol_dim,
+            num_properties=num_properties,
+            hidden_dim=hidden_dim // 2
         )
+
+        # Novelty component (distance to training distribution)
+        self.novelty_component = nn.Sequential(
+            nn.Linear(mol_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+        # Default weights (can be overridden at inference)
+        self.register_buffer('default_weights', torch.tensor([
+            1.0,  # binding
+            0.5,  # stability
+            0.3,  # properties
+            0.1   # novelty
+        ]))
 
     def forward(
         self,
-        latent_state: LatentState,
-        z_target: torch.Tensor,
-        z_env: torch.Tensor,
-        p_target: torch.Tensor,
-        property_mask: Optional[torch.Tensor] = None,
-        return_components: bool = False,
+        z_mol: torch.Tensor,
+        target_properties: Optional[torch.Tensor] = None,
+        weights: Optional[torch.Tensor] = None,
+        return_components: bool = False
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute total energy and optionally individual components.
+        Compute total energy and components.
 
         Args:
-            latent_state: Hierarchical latent state
-            z_target: Target protein embedding [B, target_dim]
-            z_env: Environment embedding [B, env_dim]
-            p_target: Target property vector [B, property_dim]
-            property_mask: Mask for which properties matter [B, num_properties]
-            return_components: Whether to return individual energy terms
+            z_mol: Molecular latent from Phase 1 encoder [batch, 768]
+            target_properties: Target property values [batch, num_properties]
+            weights: Component weights [4] (binding, stability, properties, novelty)
+            return_components: Return individual energy components
 
         Returns:
             Dictionary with:
-                - total_energy: Weighted sum [B, 1]
-                - weights: Energy term weights [B, num_terms]
-                - (optional) individual energy terms
-                - (optional) property predictions
+                - 'energy': Total energy [batch, 1]
+                - 'uncertainty': Energy uncertainty from ensemble [batch, 1]
+                - 'components': Dict of individual energies (if return_components=True)
+                - 'predicted_properties': Predicted properties [batch, num_properties]
         """
-        z_mol = latent_state.z_mol
-        z_rxn = latent_state.z_rxn
+        batch_size = z_mol.shape[0]
+        device = z_mol.device
 
-        # Compute individual energy terms
-        e_binding = self.binding_energy(z_mol, z_target)
-        e_stability = self.stability_energy(z_mol, z_env)
-        e_property, property_preds = self.property_energy(z_mol, p_target, property_mask)
-        e_feasibility = self.feasibility_energy(z_mol, z_rxn)
+        if weights is None:
+            weights = self.default_weights
 
-        # Stack energies
-        energies = [e_binding, e_stability, e_property, e_feasibility]
+        # Compute ensemble components
+        if self.use_ensemble:
+            # Binding affinity (ensemble mean + std)
+            binding_energies = torch.stack([
+                comp(z_mol) for comp in self.binding_components
+            ], dim=0)  # [ensemble_size, batch, 1]
+            binding_mean = binding_energies.mean(dim=0)
+            binding_std = binding_energies.std(dim=0)
 
-        if self.use_density_term:
-            e_density = self.density_energy(z_mol)
-            energies.append(e_density)
+            # Stability (ensemble mean + std)
+            stability_energies = torch.stack([
+                comp(z_mol) for comp in self.stability_components
+            ], dim=0)
+            stability_mean = stability_energies.mean(dim=0)
+            stability_std = stability_energies.std(dim=0)
 
-        energy_stack = torch.cat(energies, dim=-1)  # [B, num_terms]
+            # Total uncertainty
+            uncertainty = binding_std + stability_std
+        else:
+            binding_mean = self.binding_component(z_mol)
+            stability_mean = self.stability_component(z_mol)
+            uncertainty = torch.zeros_like(binding_mean)
 
-        # Compute adaptive weights
-        weights = self.meta_network(z_target, p_target)  # [B, num_terms]
+        # Property matching
+        property_energy, predicted_props = self.property_component(z_mol, target_properties)
+
+        # Novelty (exploration bonus)
+        novelty_energy = self.novelty_component(z_mol)
 
         # Weighted sum
-        total_energy = (energy_stack * weights).sum(dim=-1, keepdim=True)  # [B, 1]
+        total_energy = (
+            weights[0] * binding_mean +
+            weights[1] * stability_mean +
+            weights[2] * property_energy +
+            weights[3] * novelty_energy
+        )
 
         # Build output
         output = {
-            "total_energy": total_energy,
-            "weights": weights,
-            "property_predictions": property_preds,
+            'energy': total_energy,
+            'uncertainty': uncertainty,
+            'predicted_properties': predicted_props
         }
 
         if return_components:
-            output["e_binding"] = e_binding
-            output["e_stability"] = e_stability
-            output["e_property"] = e_property
-            output["e_feasibility"] = e_feasibility
-            if self.use_density_term:
-                output["e_density"] = e_density
+            output['components'] = {
+                'binding': binding_mean,
+                'stability': stability_mean,
+                'properties': property_energy,
+                'novelty': novelty_energy
+            }
 
         return output
 
-    def score_compatibility(
+    def optimize_molecule(
         self,
-        latent_state: LatentState,
-        z_target: torch.Tensor,
-        z_env: torch.Tensor,
-        p_target: torch.Tensor,
-        property_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        z_mol_init: torch.Tensor,
+        target_properties: torch.Tensor,
+        weights: Optional[torch.Tensor] = None,
+        num_steps: int = 100,
+        lr: float = 0.01
+    ) -> Tuple[torch.Tensor, float]:
         """
-        Compute compatibility score (negative energy).
+        Optimize molecular latent to minimize energy.
 
-        Higher score = better compatibility.
+        This is the core of latent space planning - gradient descent in z_mol space
+        to find molecules that minimize the energy function.
 
         Args:
-            (same as forward)
+            z_mol_init: Initial molecular latent [1, 768]
+            target_properties: Target property values [1, num_properties]
+            weights: Energy component weights
+            num_steps: Optimization steps
+            lr: Learning rate
 
         Returns:
-            Compatibility score [B, 1]
+            z_mol_optimized: Optimized latent [1, 768]
+            final_energy: Final energy value
         """
-        output = self.forward(latent_state, z_target, z_env, p_target, property_mask)
-        return -output["total_energy"]
+        z_mol = z_mol_init.clone().detach().requires_grad_(True)
+        optimizer = torch.optim.Adam([z_mol], lr=lr)
 
-    def contrastive_loss(
+        for step in range(num_steps):
+            optimizer.zero_grad()
+
+            output = self.forward(z_mol, target_properties, weights)
+            energy = output['energy']
+
+            # Minimize energy
+            energy.backward()
+            optimizer.step()
+
+        with torch.no_grad():
+            final_output = self.forward(z_mol, target_properties, weights)
+            final_energy = final_output['energy'].item()
+
+        return z_mol.detach(), final_energy
+
+
+class EnergyContrastiveLoss(nn.Module):
+    """
+    Contrastive loss for training energy model.
+
+    Key idea: Molecules with better properties should have lower energy.
+    Uses ranking loss to enforce this ordering.
+    """
+
+    def __init__(self, margin: float = 1.0, temperature: float = 0.1):
+        super().__init__()
+        self.margin = margin
+        self.temperature = temperature
+
+    def forward(
         self,
-        latent_state_pos: LatentState,
-        latent_state_neg: LatentState,
-        z_target: torch.Tensor,
-        z_env: torch.Tensor,
-        p_target: torch.Tensor,
-        margin: float = 1.0,
+        energies: torch.Tensor,
+        property_values: torch.Tensor,
+        property_targets: torch.Tensor
     ) -> torch.Tensor:
         """
-        Contrastive loss for training.
-
-        Positive pairs should have low energy, negatives should have high energy.
-
         Args:
-            latent_state_pos: Positive (compatible) molecules
-            latent_state_neg: Negative (incompatible) molecules
-            z_target, z_env, p_target: Context
-            margin: Margin for contrastive loss
+            energies: Predicted energies [batch, 1]
+            property_values: True property values [batch, num_properties]
+            property_targets: Target property values [num_properties]
 
         Returns:
-            Loss value
+            loss: Contrastive ranking loss
         """
-        e_pos = self.forward(latent_state_pos, z_target, z_env, p_target)["total_energy"]
-        e_neg = self.forward(latent_state_neg, z_target, z_env, p_target)["total_energy"]
+        batch_size = energies.shape[0]
 
-        # Positive energies should be low, negative energies should be high
-        loss_pos = torch.mean((e_pos - 0) ** 2)
-        loss_neg = torch.mean(torch.relu(margin - e_neg) ** 2)
+        # Compute distance to target for each molecule
+        distances = torch.norm(property_values - property_targets.unsqueeze(0), dim=-1)  # [batch]
 
-        return loss_pos + loss_neg
+        # Molecules closer to target should have lower energy
+        # Use pairwise ranking loss
+        loss = 0.0
+        count = 0
+
+        for i in range(batch_size):
+            for j in range(batch_size):
+                if i != j:
+                    # If molecule i is closer to target than j, E(i) should be lower than E(j)
+                    if distances[i] < distances[j]:
+                        # E(i) should be < E(j), penalize if E(i) >= E(j) - margin
+                        ranking_loss = F.relu(energies[i] - energies[j] + self.margin)
+                        loss = loss + ranking_loss
+                        count += 1
+
+        return loss / max(count, 1)
+
+
+if __name__ == '__main__':
+    """Quick test of energy model"""
+    print("Testing ChemJEPA Energy Model...")
+
+    # Create model
+    model = ChemJEPAEnergyModel(
+        mol_dim=768,
+        hidden_dim=512,
+        num_properties=5,
+        use_ensemble=True,
+        ensemble_size=3
+    )
+
+    # Test forward pass
+    batch_size = 8
+    z_mol = torch.randn(batch_size, 768)
+    target_props = torch.randn(batch_size, 5)
+
+    output = model(z_mol, target_props, return_components=True)
+
+    print(f"\nOutput shapes:")
+    print(f"  Energy: {output['energy'].shape}")
+    print(f"  Uncertainty: {output['uncertainty'].shape}")
+    print(f"  Predicted properties: {output['predicted_properties'].shape}")
+    print(f"  Components: {list(output['components'].keys())}")
+
+    print(f"\nEnergy statistics:")
+    print(f"  Mean: {output['energy'].mean().item():.4f}")
+    print(f"  Std:  {output['energy'].std().item():.4f}")
+    print(f"  Uncertainty mean: {output['uncertainty'].mean().item():.4f}")
+
+    # Test optimization
+    print(f"\nTesting latent optimization...")
+    z_init = torch.randn(1, 768)
+    target = torch.randn(1, 5)
+
+    z_opt, final_energy = model.optimize_molecule(z_init, target, num_steps=50)
+    print(f"  Initial energy: {model(z_init, target)['energy'].item():.4f}")
+    print(f"  Final energy:   {final_energy:.4f}")
+
+    print("\n✓ Energy model test passed!")

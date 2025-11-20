@@ -17,7 +17,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from .latent import LatentState
-from .energy import EnergyModel
+from .energy import ChemJEPAEnergyModel
 from .dynamics import DynamicsPredictor
 from .novelty import NoveltyDetector
 
@@ -162,7 +162,7 @@ class ImaginationEngine(nn.Module):
 
     def __init__(
         self,
-        energy_model: EnergyModel,
+        energy_model: ChemJEPAEnergyModel,
         dynamics_model: DynamicsPredictor,
         novelty_detector: NoveltyDetector,
         beam_size: int = 20,
