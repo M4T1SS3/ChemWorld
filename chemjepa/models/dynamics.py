@@ -130,7 +130,7 @@ class FactoredTransitionModel(nn.Module):
         self.uncertainty_net = nn.Sequential(
             nn.Linear(mol_dim + action_dim + context_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, mol_dim + rxn_dim),
+            nn.Linear(hidden_dim, mol_dim + rxn_dim + context_dim),  # Match full state size
             nn.Softplus(),  # Ensure positive
         )
 
