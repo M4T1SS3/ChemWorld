@@ -76,23 +76,24 @@ def extract_embeddings(model, data_loader, max_samples=10000):
     print(f"Extracting embeddings (max {max_samples} samples)...")
 
     with torch.no_grad():
-        for batch in tqdm(data_loader):
+        for batch_data in tqdm(data_loader):
             if len(embeddings) >= max_samples:
                 break
 
-            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()}
+            # batch_data is a dictionary with 'graph' (PyG Batch), 'properties', and 'smiles'
+            # Move to device
+            batch = batch_data['graph'].to(device)
 
-            # Use encode_molecule method
+            # Use encode_molecule method with PyG Batch attributes
             z_mol = model.encode_molecule(
-                x=batch['x'],
-                edge_index=batch['edge_index'],
-                batch=batch['batch'],
-                edge_attr=batch.get('edge_attr'),
-                pos=batch.get('pos'),
+                x=batch.x,
+                edge_index=batch.edge_index,
+                batch=batch.batch,
+                edge_attr=batch.edge_attr if hasattr(batch, 'edge_attr') else None,
+                pos=batch.pos if hasattr(batch, 'pos') else None,
             )
             embeddings.append(z_mol.cpu())
-            smiles_list.extend(batch['smiles'])
+            smiles_list.extend(batch_data['smiles'])
 
     embeddings = torch.cat(embeddings, dim=0)[:max_samples]
     smiles_list = smiles_list[:max_samples]
