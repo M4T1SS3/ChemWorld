@@ -4,7 +4,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import AnalyzeTab from '@/components/tabs/AnalyzeTab'
 import DiscoverTab from '@/components/tabs/DiscoverTab'
 import CompareTab from '@/components/tabs/CompareTab'
-import AboutTab from '@/components/tabs/AboutTab'
 
 export default function Home() {
   return (
@@ -26,7 +25,6 @@ export default function Home() {
             <TabsTrigger value="analyze">Analyze</TabsTrigger>
             <TabsTrigger value="discover">Discover</TabsTrigger>
             <TabsTrigger value="compare">Compare</TabsTrigger>
-            <TabsTrigger value="about">About</TabsTrigger>
           </TabsList>
 
           <TabsContent value="analyze">
@@ -39,10 +37,6 @@ export default function Home() {
 
           <TabsContent value="compare">
             <CompareTab />
-          </TabsContent>
-
-          <TabsContent value="about">
-            <AboutTab />
           </TabsContent>
         </Tabs>
       </div>

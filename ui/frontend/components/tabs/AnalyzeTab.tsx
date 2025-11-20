@@ -1,10 +1,22 @@
 'use client'
 
 import { useState } from 'react'
+import dynamic from 'next/dynamic'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import PropertiesTable from '@/components/tables/PropertiesTable'
 import EnergyBar from '@/components/charts/EnergyBar'
+
+// Dynamically import viewers to avoid SSR issues
+const MoleculeViewer2D = dynamic(
+  () => import('@/components/viewers/MoleculeViewer2D'),
+  { ssr: false }
+)
+
+const MoleculeViewer3D = dynamic(
+  () => import('@/components/viewers/MoleculeViewer3D'),
+  { ssr: false }
+)
 
 export default function AnalyzeTab() {
   const [smiles, setSmiles] = useState('')
@@ -99,13 +111,13 @@ export default function AnalyzeTab() {
               </div>
             </div>
 
-            {/* Placeholder for molecular viewer */}
-            <div className="bg-surface border border-border rounded h-96 flex items-center justify-center">
-              <div className="text-center text-text-muted">
-                <p className="text-lg mb-2">{viewMode.toUpperCase()} Molecular Viewer</p>
-                <p className="text-sm">Viewer will be integrated here</p>
-                <p className="text-xs mt-2">SMILES: {result.properties.smiles}</p>
-              </div>
+            {/* Molecular viewer */}
+            <div className="flex justify-center">
+              {viewMode === '2d' ? (
+                <MoleculeViewer2D smiles={result.properties.smiles} width={600} height={400} />
+              ) : (
+                <MoleculeViewer3D smiles={result.properties.smiles} width={600} height={400} />
+              )}
             </div>
           </Card>
 
