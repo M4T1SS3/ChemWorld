@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -9,9 +11,19 @@
 
   body {
     @apply bg-background text-text font-sans antialiased;
+    scroll-behavior: smooth;
   }
 
-  /* Range slider styling */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight;
+  }
+
+  /* Smooth transitions for interactive elements */
+  a, button {
+    @apply transition-all duration-200 ease-out;
+  }
+
+  /* Range slider styling - updated for light theme */
   input[type="range"] {
     -webkit-appearance: none;
     appearance: none;
@@ -19,20 +31,18 @@
     cursor: pointer;
   }
 
-  /* Slider track */
   input[type="range"]::-webkit-slider-track {
-    background: #2A2F3C;
+    background: #E2E8F0;
     height: 8px;
     border-radius: 4px;
   }
 
   input[type="range"]::-moz-range-track {
-    background: #2A2F3C;
+    background: #E2E8F0;
     height: 8px;
     border-radius: 4px;
   }
 
-  /* Slider thumb */
   input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
@@ -42,8 +52,9 @@
     background: #3B82F6;
     cursor: pointer;
     margin-top: -6px;
-    border: 2px solid #151921;
+    border: 2px solid #FFFFFF;
     box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    transition: all 0.2s ease;
   }
 
   input[type="range"]::-moz-range-thumb {
@@ -52,35 +63,115 @@
     border-radius: 50%;
     background: #3B82F6;
     cursor: pointer;
-    border: 2px solid #151921;
+    border: 2px solid #FFFFFF;
     box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    transition: all 0.2s ease;
   }
 
-  /* Hover state */
   input[type="range"]::-webkit-slider-thumb:hover {
-    background: #60A5FA;
+    background: #2563EB;
+    transform: scale(1.1);
   }
 
   input[type="range"]::-moz-range-thumb:hover {
-    background: #60A5FA;
+    background: #2563EB;
+    transform: scale(1.1);
   }
 
-  /* Focus state */
   input[type="range"]:focus {
     outline: none;
   }
 
   input[type="range"]:focus::-webkit-slider-thumb {
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
   }
 
   input[type="range"]:focus::-moz-range-thumb {
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+  }
+}
+
+@layer components {
+  /* Glass morphism effect */
+  .glass {
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
+  /* Shimmer loading effect */
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      #F1F5F9 0%,
+      #E2E8F0 20%,
+      #F1F5F9 40%,
+      #F1F5F9 100%
+    );
+    background-size: 1000px 100%;
+    animation: shimmer 2s infinite;
+  }
+
+  /* Hover lift effect */
+  .hover-lift {
+    @apply transition-all duration-300 ease-out;
+  }
+
+  .hover-lift:hover {
+    @apply -translate-y-1 shadow-lg;
+  }
+
+  /* Focus ring for inputs */
+  .input-focus {
+    @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-all duration-200;
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary-600 to-primary-400;
   }
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+
+  /* Scroll animations */
+  .animate-on-scroll {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+  }
+
+  .animate-on-scroll.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* Stagger delays for list animations */
+  .stagger-1 { animation-delay: 0.1s; }
+  .stagger-2 { animation-delay: 0.2s; }
+  .stagger-3 { animation-delay: 0.3s; }
+  .stagger-4 { animation-delay: 0.4s; }
+  .stagger-5 { animation-delay: 0.5s; }
+
+  /* Custom scrollbar */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-surface;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-border-strong rounded-full;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-text-muted;
   }
 }
