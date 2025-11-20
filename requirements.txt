@@ -53,3 +53,11 @@ mypy>=1.3.0
 
 # Molecular generation baselines (for comparison)
 guacamol>=0.5.4
+
+#interface
+gradio>=4.0.0
+matplotlib>=3.7.0
+pandas>=2.0.0
+plotly>=5.17.0
+seaborn>=0.12.0
+scikit-learn>=1.3.0
