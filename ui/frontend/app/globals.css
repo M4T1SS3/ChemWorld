@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-text font-sans antialiased;
+  }
+
+  /* Range slider styling */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  /* Slider track */
+  input[type="range"]::-webkit-slider-track {
+    background: #E5E7EB;
+    height: 8px;
+    border-radius: 4px;
+  }
+
+  input[type="range"]::-moz-range-track {
+    background: #E5E7EB;
+    height: 8px;
+    border-radius: 4px;
+  }
+
+  /* Slider thumb */
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #2563EB;
+    cursor: pointer;
+    margin-top: -6px;
+    border: 2px solid white;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #2563EB;
+    cursor: pointer;
+    border: 2px solid white;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  /* Hover state */
+  input[type="range"]::-webkit-slider-thumb:hover {
+    background: #1d4ed8;
+  }
+
+  input[type="range"]::-moz-range-thumb:hover {
+    background: #1d4ed8;
+  }
+
+  /* Focus state */
+  input[type="range"]:focus {
+    outline: none;
+  }
+
+  input[type="range"]:focus::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+  }
+
+  input[type="range"]:focus::-moz-range-thumb {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
