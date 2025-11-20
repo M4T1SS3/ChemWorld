@@ -96,7 +96,7 @@ def evaluate_energy_model(
     # Load Phase 1 model
     print("\n[1/5] Loading Phase 1 model...")
     phase1_model = ChemJEPA(device=device)
-    checkpoint = torch.load(phase1_checkpoint, map_location=device)
+    checkpoint = torch.load(phase1_checkpoint, map_location=device, weights_only=False)
 
     # Filter out Phase 2/3 components
     state_dict = checkpoint['model_state_dict']
@@ -118,7 +118,7 @@ def evaluate_energy_model(
         ensemble_size=3
     ).to(device)
 
-    phase2_checkpoint_data = torch.load(phase2_checkpoint, map_location=device)
+    phase2_checkpoint_data = torch.load(phase2_checkpoint, map_location=device, weights_only=False)
     energy_model.load_state_dict(phase2_checkpoint_data['model_state_dict'])
     energy_model.eval()
     print("✓ Energy model loaded")
