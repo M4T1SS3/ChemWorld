@@ -23,7 +23,7 @@ export default function CompareTab() {
               value={smilesA}
               onChange={(e) => setSmilesA(e.target.value)}
               placeholder="e.g., CCO"
-              className="w-full px-3 py-2 border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full px-3 py-2 bg-surface border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary text-text placeholder:text-text-muted"
             />
           </div>
 
@@ -36,7 +36,7 @@ export default function CompareTab() {
               value={smilesB}
               onChange={(e) => setSmilesB(e.target.value)}
               placeholder="e.g., CCCO"
-              className="w-full px-3 py-2 border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full px-3 py-2 bg-surface border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary text-text placeholder:text-text-muted"
             />
           </div>
         </div>

@@ -20,17 +20,18 @@ export default function EnergyBar({ energy }: EnergyBarProps) {
     <div className="w-full h-80">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-          <XAxis dataKey="name" stroke="#6B7280" />
-          <YAxis stroke="#6B7280" />
+          <CartesianGrid strokeDasharray="3 3" stroke="#2A2F3C" />
+          <XAxis dataKey="name" stroke="#9CA3AF" />
+          <YAxis stroke="#9CA3AF" />
           <Tooltip
             contentStyle={{
-              backgroundColor: '#F8F9FA',
-              border: '1px solid #E5E7EB',
+              backgroundColor: '#151921',
+              border: '1px solid #2A2F3C',
               borderRadius: '4px',
+              color: '#E5E7EB',
             }}
           />
-          <Bar dataKey="value" fill="#2563EB" />
+          <Bar dataKey="value" fill="#3B82F6" />
         </BarChart>
       </ResponsiveContainer>
     </div>

@@ -60,7 +60,7 @@ export default function AnalyzeTab() {
               onChange={(e) => setSmiles(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAnalyze()}
               placeholder="e.g., CCO (ethanol)"
-              className="flex-1 px-3 py-2 border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+              className="flex-1 px-3 py-2 bg-surface border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary text-text placeholder:text-text-muted"
             />
             <Button onClick={handleAnalyze} disabled={!smiles || analyzing}>
               {analyzing ? 'Analyzing...' : 'Analyze'}
@@ -100,7 +100,7 @@ export default function AnalyzeTab() {
             </div>
 
             {/* Placeholder for molecular viewer */}
-            <div className="bg-white border border-border rounded h-96 flex items-center justify-center">
+            <div className="bg-surface border border-border rounded h-96 flex items-center justify-center">
               <div className="text-center text-text-muted">
                 <p className="text-lg mb-2">{viewMode.toUpperCase()} Molecular Viewer</p>
                 <p className="text-sm">Viewer will be integrated here</p>
