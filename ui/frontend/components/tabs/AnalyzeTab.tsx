@@ -28,9 +28,27 @@ export default function AnalyzeTab() {
     if (!smiles) return
 
     setAnalyzing(true)
-    // TODO: Call API
-    setTimeout(() => {
-      // Mock data for now
+
+    try {
+      // Call ChemJEPA backend API
+      const response = await fetch('http://localhost:8001/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ smiles }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || 'Failed to analyze molecule')
+      }
+
+      const data = await response.json()
+      setResult(data)
+    } catch (error) {
+      console.error('Error analyzing molecule:', error)
+      // Fallback to mock data if API fails
       setResult({
         properties: {
           smiles,
@@ -51,8 +69,11 @@ export default function AnalyzeTab() {
           novelty: -0.4,
         },
       })
+      // Show error to user
+      alert(`API Error: ${error instanceof Error ? error.message : 'Unknown error'}. Using mock data.`)
+    } finally {
       setAnalyzing(false)
-    }, 1000)
+    }
   }
 
   return (
