@@ -15,7 +15,15 @@ Molecular optimization in drug discovery is fundamentally limited by sample effi
 
 ## Main Results
 
+<p align="center">
+  <img src="results/figures/hero_figure.png" width="900px">
+</p>
+
 ### PMO Benchmark (Standardized Comparison)
+
+<p align="center">
+  <img src="results/figures/pmo_benchmark_comparison.png" width="900px">
+</p>
 
 **2,500× sample efficiency** on QED drug-likeness optimization:
 - ChemJEPA: **4 oracle calls** → QED 0.855
@@ -39,7 +47,7 @@ Molecular optimization in drug discovery is fundamentally limited by sample effi
 | **Counterfactual MCTS** | **20** | **-0.026 ± 0.373** | **43×** |
 
 <p align="center">
-  <img src="results/figures/speedup_bar_chart.png" width="750px">
+  <img src="results/figures/speedup_comparison_dual.png" width="900px">
 </p>
 
 **Statistical validation:** Paired t-test (p=0.89) confirms no significant quality difference. Bootstrap confidence intervals: counterfactual [−0.035, −0.017], standard [−0.036, −0.018]. Results consistent across 5 independent trials.
@@ -89,7 +97,7 @@ Since cost(Δz<sub>env</sub>) ≪ oracle cost, speedup scales linearly with cond
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/ChemWorld
+git clone https://github.com/M4T1SS3/ChemJEPA
 cd ChemWorld
 pip install -e .
 ```
@@ -239,11 +247,17 @@ The paper includes:
 
 ---
 
-## Web Interface
+## Multi-Benchmark Validation
 
 <p align="center">
-  <img src="results/figures/quality_vs_efficiency.png" width="750px">
+  <img src="results/figures/combined_efficiency_landscape.png" width="850px">
 </p>
+
+*Combined efficiency landscape showing both PMO and QM9 benchmark results. ChemJEPA achieves superior sample efficiency across multiple evaluation frameworks.*
+
+---
+
+## Web Interface
 
 Interactive visualization and analysis interface:
 
