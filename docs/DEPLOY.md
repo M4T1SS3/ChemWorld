@@ -10,7 +10,7 @@ git push origin main
 ```
 
 ### Step 2: Enable GitHub Pages
-1. Go to your GitHub repo: `https://github.com/yourusername/ChemWorld`
+1. Go to your GitHub repo: `https://github.com/M4T1SS3/ChemJEPA`
 2. Click **Settings** → **Pages** (left sidebar)
 3. Under "Source", select:
    - Branch: `main`
@@ -53,7 +53,7 @@ dramatically reduce expensive oracle queries in drug discovery.
 
 📊 Results: Same quality, 43× fewer DFT simulations
 🔗 Paper: https://yourusername.github.io/ChemWorld
-💻 Code: https://github.com/yourusername/ChemWorld
+💻 Code: https://github.com/M4T1SS3/ChemJEPA
 
 #MachineLearning #DrugDiscovery #AI
 ```
@@ -90,7 +90,7 @@ Update your main README.md:
 ### Update GitHub Links
 Edit `docs/index.html` line 104:
 ```html
-<a href="https://github.com/YOURUSERNAME/ChemWorld" class="link-button github">
+<a href="https://github.com/M4T1SS3/ChemJEPA" class="link-button github">
 ```
 
 ### Add Your Name
