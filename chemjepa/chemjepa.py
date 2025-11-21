@@ -6,7 +6,7 @@ Unified interface for the complete ChemJEPA architecture.
 
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import warnings
 
 from .models.encoders.molecular import MolecularEncoder
@@ -17,6 +17,7 @@ from .models.energy import ChemJEPAEnergyModel
 from .models.dynamics import DynamicsPredictor
 from .models.novelty import NoveltyDetector
 from .models.planning import ImaginationEngine
+from .utils.property_encoding import PropertyEncoder
 
 
 class ChemJEPA(nn.Module):
@@ -68,6 +69,12 @@ class ChemJEPA(nn.Module):
         self.mol_dim = mol_dim
         self.rxn_dim = rxn_dim
         self.context_dim = context_dim
+        self.target_dim = target_dim
+        self.env_dim = env_dim
+        self.property_dim = property_dim
+
+        # Property encoder for converting dicts to tensors
+        self.property_encoder = PropertyEncoder(property_dim=property_dim)
 
         # Encoders
         mol_config = mol_encoder_config or {}
@@ -120,6 +127,9 @@ class ChemJEPA(nn.Module):
             energy_model=self.energy_model,
             dynamics_model=self.dynamics_model,
             novelty_detector=self.novelty_detector,
+            mol_dim=mol_dim,
+            rxn_dim=rxn_dim,
+            context_dim=context_dim,
         ).to(self.device)
 
     def encode_molecule(
@@ -267,7 +277,7 @@ class ChemJEPA(nn.Module):
 
     def imagine(
         self,
-        target_properties: Dict[str, float],
+        target_properties: Dict[str, Union[str, float]],
         protein_target: Optional[str] = None,
         environment: Optional[Dict] = None,
         num_candidates: int = 10,
@@ -279,7 +289,7 @@ class ChemJEPA(nn.Module):
 
         Args:
             target_properties: Dictionary of target properties
-                e.g., {"IC50": "<10nM", "bioavailability": ">50%"}
+                e.g., {"IC50": "<10nM", "bioavailability": ">50%", "LogP": 2.5}
             protein_target: Protein sequence or identifier
             environment: Environment specification
             num_candidates: Number of candidates to generate
@@ -294,7 +304,7 @@ class ChemJEPA(nn.Module):
             z_target = self.encode_protein(sequence=protein_target)
         else:
             warnings.warn("No protein target provided, using zero vector")
-            z_target = torch.zeros(1, 256, device=self.device)  # TODO: make configurable
+            z_target = torch.zeros(1, self.target_dim, device=self.device)
 
         # Encode environment
         if environment is not None:
@@ -304,11 +314,10 @@ class ChemJEPA(nn.Module):
             z_env = self.encode_environment(categorical, continuous)
         else:
             warnings.warn("No environment provided, using zero vector")
-            z_env = torch.zeros(1, 128, device=self.device)  # TODO: make configurable
+            z_env = torch.zeros(1, self.env_dim, device=self.device)
 
-        # Encode target properties
-        # TODO: implement proper property encoding from dict
-        p_target = torch.zeros(1, 64, device=self.device)  # Placeholder
+        # Encode target properties using property encoder
+        p_target = self.property_encoder.encode(target_properties, device=self.device)
 
         # Run imagination engine
         results = self.imagination_engine.imagine(
