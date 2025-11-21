@@ -170,6 +170,9 @@ class ImaginationEngine(nn.Module):
         exploration_coef: float = 1.0,
         novelty_penalty: float = 0.5,
         use_counterfactual: bool = True,
+        mol_dim: int = 768,
+        rxn_dim: int = 384,
+        context_dim: int = 256,
     ):
         super().__init__()
 
@@ -182,6 +185,11 @@ class ImaginationEngine(nn.Module):
         self.exploration_coef = exploration_coef
         self.novelty_penalty = novelty_penalty
         self.use_counterfactual = use_counterfactual
+
+        # Configurable dimensions
+        self.mol_dim = mol_dim
+        self.rxn_dim = rxn_dim
+        self.context_dim = context_dim
 
         # Diversity sampling
         self.dpp = DeterminantalPointProcess()
@@ -451,13 +459,18 @@ class ImaginationEngine(nn.Module):
 
             for _ in range(num_init):
                 # Sample from learned prior (simple Gaussian for now)
-                z_mol = torch.randn(1, self.energy_model.mol_dim, device=device)
-                z_rxn = torch.randn(1, 384, device=device)  # TODO: make configurable
+                z_mol = torch.randn(1, self.mol_dim, device=device)
+                z_rxn = torch.randn(1, self.rxn_dim, device=device)
                 z_context = torch.cat([z_env, z_target, p_target], dim=-1)
 
-                # Project to correct dimension
-                if z_context.shape[-1] != 256:  # TODO: make configurable
-                    z_context = z_context[:, :256]
+                # Project to correct dimension if needed
+                if z_context.shape[-1] != self.context_dim:
+                    # Use projection layer
+                    if not hasattr(self, 'context_proj'):
+                        self.context_proj = torch.nn.Linear(
+                            z_context.shape[-1], self.context_dim
+                        ).to(device)
+                    z_context = self.context_proj(z_context)
 
                 initial_state = LatentState(z_mol=z_mol, z_rxn=z_rxn, z_context=z_context)
                 initial_states.append(initial_state)
