@@ -1,5 +1,5 @@
 // API client for ChemJEPA backend
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'
 
 export class APIError extends Error {
   constructor(public status: number, message: string) {
@@ -57,6 +57,26 @@ export const api = {
     return request('/api/compare', {
       method: 'POST',
       body: JSON.stringify({ smiles_a: smilesA, smiles_b: smilesB }),
+    })
+  },
+
+  // Find similar molecules
+  findSimilar: async (smiles: string, numResults: number = 5) => {
+    return request('/api/similar', {
+      method: 'POST',
+      body: JSON.stringify({ smiles, num_results: numResults }),
+    })
+  },
+
+  // Optimize molecule
+  optimize: async (smiles: string, targetProperties: any, numCandidates: number = 10) => {
+    return request('/api/optimize', {
+      method: 'POST',
+      body: JSON.stringify({
+        smiles,
+        target_properties: targetProperties,
+        num_candidates: numCandidates
+      }),
     })
   },
 
