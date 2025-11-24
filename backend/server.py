@@ -8,10 +8,12 @@ import sys
 import torch
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import logging
+import json
+import asyncio
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -35,7 +37,12 @@ app = FastAPI(
 # Add CORS middleware to allow frontend requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,6 +51,10 @@ app.add_middleware(
 # Global model instance
 model: Optional[ChemJEPA] = None
 device = None
+
+# Molecule cache for similarity search and decoding
+molecule_cache: Dict[str, torch.Tensor] = {}  # SMILES -> latent vector
+import numpy as np
 
 # Request/Response models
 class AnalyzeRequest(BaseModel):
@@ -149,6 +160,37 @@ def calculate_sa_score(mol):
     sa = 1.0 + (num_rings * 0.5) + (num_rotatable * 0.1) + (num_hetero * 0.05)
     return min(sa, 10.0)
 
+def find_nearest_neighbors_in_cache(query_vector: torch.Tensor, k: int = 10) -> List[Tuple[str, float]]:
+    """
+    Find k nearest neighbors to query vector in molecule cache using cosine similarity.
+
+    Returns:
+        List of (smiles, similarity_score) tuples, sorted by similarity (highest first)
+    """
+    if len(molecule_cache) == 0:
+        return []
+
+    # Convert query to numpy
+    query_np = query_vector.cpu().numpy() if isinstance(query_vector, torch.Tensor) else query_vector
+    query_np = query_np.flatten()
+    query_norm = np.linalg.norm(query_np)
+
+    similarities = []
+    for smiles, cached_vector in molecule_cache.items():
+        # Convert cached vector to numpy
+        cached_np = cached_vector.cpu().numpy() if isinstance(cached_vector, torch.Tensor) else cached_vector
+        cached_np = cached_np.flatten()
+
+        # Cosine similarity
+        cached_norm = np.linalg.norm(cached_np)
+        if query_norm > 0 and cached_norm > 0:
+            similarity = float(np.dot(query_np, cached_np) / (query_norm * cached_norm))
+            similarities.append((smiles, similarity))
+
+    # Sort by similarity (highest first) and return top k
+    similarities.sort(key=lambda x: x[1], reverse=True)
+    return similarities[:k]
+
 def calculate_molecular_properties(smiles: str) -> MolecularProperties:
     """Calculate molecular properties from SMILES using RDKit"""
     try:
@@ -204,11 +246,11 @@ def predict_energy_decomposition(model: ChemJEPA, smiles: str, device) -> Tuple[
         # Get molecular data
         mol_data = dataset[0]
 
-        # Move to device and add batch dimension
-        x = mol_data['x'].unsqueeze(0).to(device)
+        # Move to device (NO batch dimension for PyTorch Geometric!)
+        x = mol_data['x'].to(device)
         edge_index = mol_data['edge_index'].to(device)
         batch_tensor = torch.zeros(mol_data['x'].size(0), dtype=torch.long).to(device)
-        edge_attr = mol_data['edge_attr'].unsqueeze(0).to(device) if mol_data['edge_attr'] is not None else None
+        edge_attr = mol_data['edge_attr'].to(device) if mol_data['edge_attr'] is not None else None
 
         # Run inference
         model.eval()
@@ -356,6 +398,17 @@ async def analyze_molecule(request: AnalyzeRequest):
         # Predict energy if model is loaded
         if model is not None:
             energy, latent_rep = predict_energy_decomposition(model, request.smiles, device)
+
+            # Cache molecule for similarity search
+            if latent_rep is not None:
+                global molecule_cache
+                # Convert to tensor if it's a list
+                if isinstance(latent_rep, list):
+                    latent_tensor = torch.tensor(latent_rep, device=device)
+                else:
+                    latent_tensor = latent_rep
+                molecule_cache[request.smiles] = latent_tensor
+                logger.info(f"Cached molecule. Cache size: {len(molecule_cache)}")
         else:
             # Fallback to placeholder
             energy = EnergyDecomposition(
@@ -377,6 +430,66 @@ async def analyze_molecule(request: AnalyzeRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error in analyze endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/api/molecule-structure")
+async def get_molecule_structure(request: AnalyzeRequest):
+    """
+    Get 3D molecular structure (atoms and bonds) from SMILES
+
+    Returns atom positions and bond information for Three.js visualization
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        # Parse SMILES
+        mol = Chem.MolFromSmiles(request.smiles)
+        if mol is None:
+            raise ValueError(f"Invalid SMILES: {request.smiles}")
+
+        # Add hydrogens for better 3D structure
+        mol = Chem.AddHs(mol)
+
+        # Generate 3D coordinates
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        AllChem.MMFFOptimizeMolecule(mol)
+
+        # Get conformer (3D coordinates)
+        conf = mol.GetConformer()
+
+        # Extract atoms
+        atoms = []
+        for atom in mol.GetAtoms():
+            pos = conf.GetAtomPosition(atom.GetIdx())
+            atoms.append({
+                "element": atom.GetSymbol(),
+                "x": float(pos.x),
+                "y": float(pos.y),
+                "z": float(pos.z)
+            })
+
+        # Extract bonds
+        bonds = []
+        for bond in mol.GetBonds():
+            bonds.append({
+                "atom1": int(bond.GetBeginAtomIdx()),
+                "atom2": int(bond.GetEndAtomIdx()),
+                "order": int(bond.GetBondTypeAsDouble())
+            })
+
+        return {
+            "structure": {
+                "atoms": atoms,
+                "bonds": bonds
+            }
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error generating molecular structure: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/api/optimize", response_model=OptimizeResponse)
@@ -428,18 +541,32 @@ async def optimize_molecule(request: OptimizeRequest):
             return_traces=True
         )
 
-        # Convert latent states back to SMILES (placeholder - need decoder)
+        # Convert latent states back to SMILES using nearest neighbor decoding
         candidates = []
         for i, (state, score) in enumerate(zip(results["candidates"], results["scores"])):
-            # For now, return the original SMILES with score
-            # TODO: Implement latent-to-SMILES decoder
             try:
-                props = calculate_molecular_properties(request.smiles)
-                energy, _ = predict_energy_decomposition(model, request.smiles, device)
+                # Extract molecular latent vector from candidate state
+                z_candidate = state.z_mol  # Shape: (1, 768)
+
+                # Find nearest neighbor in cache
+                neighbors = find_nearest_neighbors_in_cache(z_candidate, k=1)
+
+                if len(neighbors) > 0:
+                    # Use nearest neighbor as decoded SMILES
+                    decoded_smiles, similarity = neighbors[0]
+                    logger.info(f"Candidate {i+1}: Decoded to {decoded_smiles} (similarity: {similarity:.3f})")
+                else:
+                    # Fallback to query molecule if cache is empty
+                    decoded_smiles = request.smiles
+                    logger.warning(f"Cache empty, using query molecule for candidate {i+1}")
+
+                # Calculate properties for the decoded molecule
+                props = calculate_molecular_properties(decoded_smiles)
+                energy, _ = predict_energy_decomposition(model, decoded_smiles, device)
 
                 candidate = OptimizedCandidate(
                     rank=i + 1,
-                    smiles=request.smiles,  # Placeholder
+                    smiles=decoded_smiles,
                     score=float(score),
                     properties=props,
                     energy=energy,
@@ -485,21 +612,36 @@ async def find_similar_molecules(request: SimilarRequest):
         if z_query is None:
             raise ValueError("Failed to encode query molecule")
 
-        # TODO: Implement actual similarity search
-        # For now, return placeholder with the query molecule
+        # Convert to tensor if needed
+        if isinstance(z_query, list):
+            z_query_tensor = torch.tensor(z_query, device=device)
+        else:
+            z_query_tensor = z_query
+
+        # Find similar molecules using cache
+        neighbors = find_nearest_neighbors_in_cache(z_query_tensor, k=request.num_results + 1)
+
+        # Build response (skip the query molecule itself if it's in results)
         similar_molecules = []
-        for i in range(min(request.num_results, 5)):
-            # Placeholder: return variations of the same molecule
+        for smiles, similarity in neighbors:
+            if smiles == request.smiles:
+                continue  # Skip the query molecule
+            if len(similar_molecules) >= request.num_results:
+                break
             try:
-                props = calculate_molecular_properties(request.smiles)
+                props = calculate_molecular_properties(smiles)
                 similar_molecules.append(SimilarMolecule(
-                    smiles=request.smiles,
-                    similarity_score=1.0 - (i * 0.1),  # Decreasing similarity
+                    smiles=smiles,
+                    similarity_score=round(similarity, 3),
                     properties=props
                 ))
             except Exception as e:
-                logger.error(f"Error processing similar molecule {i}: {e}")
+                logger.error(f"Error processing similar molecule {smiles}: {e}")
                 continue
+
+        # If cache is empty or has too few molecules, add a message
+        if len(similar_molecules) == 0:
+            logger.warning("No similar molecules found in cache. Analyze more molecules first!")
 
         return SimilarResponse(
             query_smiles=request.smiles,
@@ -642,6 +784,111 @@ async def predict_dynamics(request: PredictDynamicsRequest):
     except Exception as e:
         logger.error(f"Error in predict-dynamics endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/api/latent-space")
+async def get_latent_space():
+    """
+    Get all cached molecules with their latent embeddings for visualization.
+
+    Returns molecules in the cache with their SMILES and embeddings.
+    """
+    try:
+        molecules = []
+
+        for smiles, embedding_tensor in molecule_cache.items():
+            # Convert tensor to list
+            embedding = embedding_tensor.cpu().numpy().flatten().tolist() if isinstance(embedding_tensor, torch.Tensor) else list(embedding_tensor)
+
+            # Get properties if possible
+            try:
+                props = calculate_molecular_properties(smiles)
+                molecules.append({
+                    "smiles": smiles,
+                    "embedding": embedding[:2],  # Only send first 2 dimensions for 2D projection
+                    "properties": {
+                        "LogP": props.LogP,
+                        "TPSA": props.TPSA,
+                        "MolWt": props.MolWt,
+                        "QED": props.QED
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Error getting properties for {smiles}: {e}")
+                molecules.append({
+                    "smiles": smiles,
+                    "embedding": embedding[:2]
+                })
+
+        return {
+            "molecules": molecules,
+            "total": len(molecules)
+        }
+
+    except Exception as e:
+        logger.error(f"Error in latent-space endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.websocket("/ws/optimize")
+async def websocket_optimize(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time optimization updates.
+
+    Receives optimization request and sends progress updates.
+    """
+    await websocket.accept()
+
+    try:
+        # Receive optimization request
+        data = await websocket.receive_json()
+
+        smiles = data.get("smiles")
+        target_properties = data.get("target_properties", {})
+        num_candidates = data.get("num_candidates", 10)
+
+        logger.info(f"WebSocket optimization started for {smiles}")
+
+        # Send initial status
+        await websocket.send_json({
+            "status": "starting",
+            "message": "Initializing optimization..."
+        })
+
+        await asyncio.sleep(0.5)
+
+        # Send encoding status
+        await websocket.send_json({
+            "status": "encoding",
+            "message": "Encoding molecule..."
+        })
+
+        # TODO: Actual optimization with progress updates
+        # For now, simulate progress
+        for i in range(1, 6):
+            await asyncio.sleep(0.5)
+            await websocket.send_json({
+                "status": "optimizing",
+                "message": f"Running imagination engine... Step {i}/5",
+                "progress": i / 5
+            })
+
+        # Send completion
+        await websocket.send_json({
+            "status": "complete",
+            "message": "Optimization complete!",
+            "candidates": num_candidates
+        })
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "status": "error",
+                "message": str(e)
+            })
+        except:
+            pass
 
 if __name__ == "__main__":
     import uvicorn
